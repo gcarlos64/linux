@@ -379,6 +379,26 @@ static void drm_test_framebuffer_create(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, params->buffer_created, buffer_created);
 }
 
+static void drm_test_framebuffer_modifiers_not_supported(struct kunit *test)
+{
+	struct drm_mode_fb_cmd2 cmd = {
+		.width = MAX_WIDTH, .height = MAX_HEIGHT,
+		.pixel_format = DRM_FORMAT_ABGR8888, .handles = { 1, 0, 0 },
+		.offsets = { UINT_MAX / 2, 0, 0 }, .pitches = { 4 * MAX_WIDTH, 0, 0 },
+		.flags = DRM_MODE_FB_MODIFIERS,
+	};
+	struct drm_device *mock = test->priv;
+	int buffer_created = 0;
+
+	mock->dev_private = &buffer_created;
+	mock->mode_config.fb_modifiers_not_supported = 1;
+
+	drm_internal_framebuffer_create(mock, &cmd, NULL);
+	KUNIT_EXPECT_EQ(test, 0, buffer_created);
+
+	mock->mode_config.fb_modifiers_not_supported = 0;
+}
+
 static void drm_framebuffer_test_to_desc(const struct drm_framebuffer_test *t, char *desc)
 {
 	strcpy(desc, t->name);
@@ -389,6 +409,7 @@ KUNIT_ARRAY_PARAM(drm_framebuffer_create, drm_framebuffer_create_cases,
 
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
+	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
 	{ }
 };
 
