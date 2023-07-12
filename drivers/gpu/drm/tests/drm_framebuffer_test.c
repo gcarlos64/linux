@@ -9,6 +9,7 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 
@@ -366,8 +367,114 @@ static void drm_framebuffer_test_to_desc(const struct drm_framebuffer_test *t, c
 KUNIT_ARRAY_PARAM(drm_framebuffer_create, drm_framebuffer_create_cases,
 		  drm_framebuffer_test_to_desc);
 
+struct check_src_coords_case {
+	const int expect;
+	const uint32_t src_x;
+	const uint32_t src_y;
+	const uint32_t src_w;
+	const uint32_t src_h;
+	const struct drm_framebuffer fb;
+	const char *name;
+};
+
+static const struct check_src_coords_case check_src_coords_cases[] = {
+	{ .name = "source inside framebuffer",
+	  .expect = 0,
+	  .src_x = 500 << 16, .src_y = 700 << 16,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "out of bound with normal sizes and coordinates",
+	  .expect = -ENOSPC,
+	  .src_x = (500 << 16) + 1, .src_y = (700 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "source width higher than framebuffer width",
+	  .expect = -ENOSPC,
+	  .src_x = 0, .src_y = 700 << 16,
+	  .src_w = (600 << 16) + 1, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "source width equal framebuffer width with x coordinates 0",
+	  .expect = 0,
+	  .src_x = 0, .src_y = 700 << 16,
+	  .src_w = 600 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "source width equal framebuffer width with non-zero x coordinate",
+	  .expect = -ENOSPC,
+	  .src_x = 1, .src_y = 700 << 16,
+	  .src_w = 600 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "out of bound with normal width and x",
+	  .expect = -ENOSPC,
+	  .src_x = (500 << 16) + 1, .src_y = 700 << 16,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "x coordinate higher than framebuffer width",
+	  .expect = -ENOSPC,
+	  .src_x = (600 << 16) + 1, .src_y = 700 << 16,
+	  .src_w = 0, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "source height higher than framebuffer height",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = 0,
+	  .src_w = 100 << 16, .src_h = (600 << 16) + 1,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "source height equal framebuffer height with y coordinates 0",
+	  .expect = 0,
+	  .src_x = 700 << 16, .src_y = 0,
+	  .src_w = 100 << 16, .src_h = 600 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "source height equal framebuffer height with non-zero y coordinate",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = 1,
+	  .src_w = 100 << 16, .src_h = 600 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "out of bound with normal height and y",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = (500 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "y coordinate higher than framebuffer height",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = (600 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 0,
+	  .fb = { .width = 800, .height = 600 }
+	},
+};
+
+static void drm_test_framebuffer_check_src_coords(struct kunit *test)
+{
+	const struct check_src_coords_case *params = test->param_value;
+	int r;
+
+	r = drm_framebuffer_check_src_coords(params->src_x, params->src_y,
+					     params->src_w, params->src_h,
+					     &params->fb);
+	KUNIT_EXPECT_EQ(test, r, params->expect);
+}
+
+static void check_src_coords_test_to_desc(const struct check_src_coords_case *t,
+					  char *desc)
+{
+	strcpy(desc, t->name);
+}
+
+KUNIT_ARRAY_PARAM(check_src_coords, check_src_coords_cases,
+		  check_src_coords_test_to_desc);
+
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
+	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
 	{ }
 };
 
