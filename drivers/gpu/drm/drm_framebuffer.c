@@ -73,6 +73,21 @@
  * drm_framebuffer.
  */
 
+/**
+ * drm_framebuffer_check_src_coords - check if the source with given
+ * coordinates and sizes is inside the framebuffer
+ * @src_x: source x coordinate
+ * @src_y: source y coordinate
+ * @src_w: source width
+ * @src_h: source height
+ * @fb: pointer to the framebuffer to check
+ *
+ * This function checks if an object with the given set of coordinates and
+ * sizes fits inside the framebuffer by looking at its size.
+ *
+ * Returns:
+ * Zero on success, negative errno on failure.
+ */
 int drm_framebuffer_check_src_coords(uint32_t src_x, uint32_t src_y,
 				     uint32_t src_w, uint32_t src_h,
 				     const struct drm_framebuffer *fb)
@@ -82,7 +97,6 @@ int drm_framebuffer_check_src_coords(uint32_t src_x, uint32_t src_y,
 	fb_width = fb->width << 16;
 	fb_height = fb->height << 16;
 
-	/* Make sure source coordinates are inside the fb. */
 	if (src_w > fb_width ||
 	    src_x > fb_width - src_w ||
 	    src_h > fb_height ||
