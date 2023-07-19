@@ -9,6 +9,7 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 
@@ -337,6 +338,9 @@ static int drm_framebuffer_test_init(struct kunit *test)
 	mock = kunit_kzalloc(test, sizeof(*mock), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock);
 
+	mutex_init(&mock->mode_config.fb_lock);
+	INIT_LIST_HEAD(&mock->mode_config.fb_list);
+	mock->mode_config.num_fb = 0;
 	mock->mode_config.min_width = MIN_WIDTH;
 	mock->mode_config.max_width = MAX_WIDTH;
 	mock->mode_config.min_height = MIN_HEIGHT;
@@ -345,6 +349,13 @@ static int drm_framebuffer_test_init(struct kunit *test)
 
 	test->priv = mock;
 	return 0;
+}
+
+static void drm_framebuffer_test_exit(struct kunit *test)
+{
+	struct drm_device *mock = test->priv;
+
+	mutex_destroy(&mock->mode_config.fb_lock);
 }
 
 static void drm_test_framebuffer_create(struct kunit *test)
@@ -366,7 +377,34 @@ static void drm_framebuffer_test_to_desc(const struct drm_framebuffer_test *t, c
 KUNIT_ARRAY_PARAM(drm_framebuffer_create, drm_framebuffer_create_cases,
 		  drm_framebuffer_test_to_desc);
 
+static void drm_test_framebuffer_cleanup(struct kunit *test)
+{
+	struct drm_device *mock = test->priv;
+	struct list_head *fb_list = &mock->mode_config.fb_list;
+	struct drm_framebuffer fb1 = { .dev = mock };
+	struct drm_framebuffer fb2 = { .dev = mock };
+
+	/* This should result on [fb_list] -> fb1 -> fb2 */
+	list_add_tail(&fb1.head, fb_list);
+	list_add_tail(&fb2.head, fb_list);
+	mock->mode_config.num_fb = 2;
+
+	drm_framebuffer_cleanup(&fb1);
+
+	/* now [fb_list] -> fb2 */
+	KUNIT_ASSERT_PTR_EQ(test, fb_list->next, &fb2.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb2.head.prev, fb_list);
+	KUNIT_ASSERT_EQ(test, mock->mode_config.num_fb, 1);
+
+	drm_framebuffer_cleanup(&fb2);
+
+	/* now fb_list is empty */
+	KUNIT_ASSERT_TRUE(test, list_empty(fb_list));
+	KUNIT_ASSERT_EQ(test, mock->mode_config.num_fb, 0);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
+	KUNIT_CASE(drm_test_framebuffer_cleanup),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
 	{ }
 };
@@ -374,6 +412,7 @@ static struct kunit_case drm_framebuffer_tests[] = {
 static struct kunit_suite drm_framebuffer_test_suite = {
 	.name = "drm_framebuffer",
 	.init = drm_framebuffer_test_init,
+	.exit = drm_framebuffer_test_exit,
 	.test_cases = drm_framebuffer_tests,
 };
 
