@@ -8,7 +8,9 @@
 #include <kunit/test.h>
 
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 
@@ -337,6 +339,7 @@ static int drm_framebuffer_test_init(struct kunit *test)
 	mock = kunit_kzalloc(test, sizeof(*mock), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock);
 
+	mutex_init(&mock->mode_config.fb_lock);
 	mock->mode_config.min_width = MIN_WIDTH;
 	mock->mode_config.max_width = MAX_WIDTH;
 	mock->mode_config.min_height = MIN_HEIGHT;
@@ -345,6 +348,13 @@ static int drm_framebuffer_test_init(struct kunit *test)
 
 	test->priv = mock;
 	return 0;
+}
+
+static void drm_framebuffer_test_exit(struct kunit *test)
+{
+	struct drm_device *mock = test->priv;
+
+	mutex_destroy(&mock->mode_config.fb_lock);
 }
 
 static void drm_test_framebuffer_create(struct kunit *test)
@@ -366,7 +376,32 @@ static void drm_framebuffer_test_to_desc(const struct drm_framebuffer_test *t, c
 KUNIT_ARRAY_PARAM(drm_framebuffer_create, drm_framebuffer_create_cases,
 		  drm_framebuffer_test_to_desc);
 
+static void drm_test_framebuffer_lookup(struct kunit *test)
+{
+	struct drm_device *mock = test->priv;
+	struct drm_framebuffer fb1 = { };
+	struct drm_framebuffer *fb2;
+	uint32_t id = 0;
+	int ret;
+
+	mock->driver = kunit_kzalloc(test, sizeof(*mock->driver), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock->driver);
+
+	ret = drm_mode_object_add(mock, &fb1.base, DRM_MODE_OBJECT_FB);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	id = fb1.base.id;
+
+	/* Looking for fb1 */
+	fb2 = drm_framebuffer_lookup(mock, NULL, id);
+	KUNIT_EXPECT_PTR_EQ(test, fb2, &fb1);
+
+	/* Looking for an inexsistent framebuffer */
+	fb2 = drm_framebuffer_lookup(mock, NULL, id + 1);
+	KUNIT_EXPECT_NULL(test, fb2);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
+	KUNIT_CASE(drm_test_framebuffer_lookup),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
 	{ }
 };
@@ -374,6 +409,7 @@ static struct kunit_case drm_framebuffer_tests[] = {
 static struct kunit_suite drm_framebuffer_test_suite = {
 	.name = "drm_framebuffer",
 	.init = drm_framebuffer_test_init,
+	.exit = drm_framebuffer_test_exit,
 	.test_cases = drm_framebuffer_tests,
 };
 
