@@ -557,8 +557,60 @@ static void drm_test_framebuffer_lookup(struct kunit *test)
 	KUNIT_EXPECT_NULL(test, fb2);
 }
 
+static void drm_test_framebuffer_init(struct kunit *test)
+{
+	struct drm_mock *mock = test->priv;
+	struct drm_device *dev = &mock->dev;
+	struct drm_device wrong_drm = { };
+	struct drm_format_info format = { };
+	struct drm_framebuffer fb1 = { .dev = dev, .format = &format };
+	struct drm_framebuffer *fb2;
+	struct drm_framebuffer_funcs funcs = { };
+	int ret;
+
+	/* Fails if fb->dev doesn't point to the drm_device passed on first arg */
+	fb1.dev = &wrong_drm;
+	ret = drm_framebuffer_init(dev, &fb1, &funcs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	fb1.dev = dev;
+
+	/* Fails if fb.format isn't set */
+	fb1.format = NULL;
+	ret = drm_framebuffer_init(dev, &fb1, &funcs);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	fb1.format = &format;
+
+	ret = drm_framebuffer_init(dev, &fb1, &funcs);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	/*
+	 * Check if fb->funcs is actually set to the drm_framebuffer_funcs
+	 * passed to it
+	 */
+	KUNIT_EXPECT_PTR_EQ(test, fb1.funcs, &funcs);
+
+	/* The fb->comm must be set to the current running process */
+	KUNIT_EXPECT_STREQ(test, fb1.comm, current->comm);
+
+	/* The fb->base must be successfully initialized */
+	KUNIT_EXPECT_EQ(test, fb1.base.id, 1);
+	KUNIT_EXPECT_EQ(test, fb1.base.type, DRM_MODE_OBJECT_FB);
+	KUNIT_EXPECT_EQ(test, kref_read(&fb1.base.refcount), 1);
+	KUNIT_EXPECT_PTR_EQ(test, fb1.base.free_cb, &drm_framebuffer_free);
+
+	/* Checks if the fb is really published and findable */
+	fb2 = drm_framebuffer_lookup(dev, NULL, fb1.base.id);
+	KUNIT_EXPECT_PTR_EQ(test, fb2, &fb1);
+
+	/* There must be just that one fb initialized */
+	KUNIT_EXPECT_EQ(test, dev->mode_config.num_fb, 1);
+	KUNIT_EXPECT_PTR_EQ(test, dev->mode_config.fb_list.prev, &fb1.head);
+	KUNIT_EXPECT_PTR_EQ(test, dev->mode_config.fb_list.next, &fb1.head);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE(drm_test_framebuffer_cleanup),
+	KUNIT_CASE(drm_test_framebuffer_init),
 	KUNIT_CASE(drm_test_framebuffer_lookup),
 	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
