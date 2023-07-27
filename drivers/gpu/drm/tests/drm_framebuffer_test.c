@@ -370,6 +370,9 @@ static int drm_framebuffer_test_init(struct kunit *test)
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock);
 	dev = &mock->dev;
 
+	mutex_init(&dev->mode_config.fb_lock);
+	INIT_LIST_HEAD(&dev->mode_config.fb_list);
+	dev->mode_config.num_fb = 0;
 	dev->mode_config.min_width = MIN_WIDTH;
 	dev->mode_config.max_width = MAX_WIDTH;
 	dev->mode_config.min_height = MIN_HEIGHT;
@@ -378,6 +381,14 @@ static int drm_framebuffer_test_init(struct kunit *test)
 
 	test->priv = mock;
 	return 0;
+}
+
+static void drm_framebuffer_test_exit(struct kunit *test)
+{
+	struct drm_mock *mock = test->priv;
+	struct drm_device *dev = &mock->dev;
+
+	mutex_destroy(&dev->mode_config.fb_lock);
 }
 
 static void drm_test_framebuffer_create(struct kunit *test)
@@ -483,7 +494,44 @@ static void check_src_coords_test_to_desc(const struct check_src_coords_case *t,
 KUNIT_ARRAY_PARAM(check_src_coords, check_src_coords_cases,
 		  check_src_coords_test_to_desc);
 
+static void drm_test_framebuffer_cleanup(struct kunit *test)
+{
+	struct drm_mock *mock = test->priv;
+	struct drm_device *dev = &mock->dev;
+	struct list_head *fb_list = &dev->mode_config.fb_list;
+	struct drm_framebuffer fb1 = { .dev = dev };
+	struct drm_framebuffer fb2 = { .dev = dev };
+
+	/* This must result on [fb_list] -> fb1 -> fb2 */
+	list_add_tail(&fb1.head, fb_list);
+	list_add_tail(&fb2.head, fb_list);
+	dev->mode_config.num_fb = 2;
+
+	KUNIT_ASSERT_PTR_EQ(test, fb_list->prev, &fb2.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb_list->next, &fb1.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb1.head.prev, fb_list);
+	KUNIT_ASSERT_PTR_EQ(test, fb1.head.next, &fb2.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb2.head.prev, &fb1.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb2.head.next, fb_list);
+
+	drm_framebuffer_cleanup(&fb1);
+
+	/* Now [fb_list] -> fb2 */
+	KUNIT_ASSERT_PTR_EQ(test, fb_list->prev, &fb2.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb_list->next, &fb2.head);
+	KUNIT_ASSERT_PTR_EQ(test, fb2.head.prev, fb_list);
+	KUNIT_ASSERT_PTR_EQ(test, fb2.head.next, fb_list);
+	KUNIT_ASSERT_EQ(test, dev->mode_config.num_fb, 1);
+
+	drm_framebuffer_cleanup(&fb2);
+
+	/* Now fb_list is empty */
+	KUNIT_ASSERT_TRUE(test, list_empty(fb_list));
+	KUNIT_ASSERT_EQ(test, dev->mode_config.num_fb, 0);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
+	KUNIT_CASE(drm_test_framebuffer_cleanup),
 	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
@@ -493,6 +541,7 @@ static struct kunit_case drm_framebuffer_tests[] = {
 static struct kunit_suite drm_framebuffer_test_suite = {
 	.name = "drm_framebuffer",
 	.init = drm_framebuffer_test_init,
+	.exit = drm_framebuffer_test_exit,
 	.test_cases = drm_framebuffer_tests,
 };
 
