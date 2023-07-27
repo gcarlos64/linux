@@ -10,6 +10,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_file.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
@@ -321,6 +322,7 @@ static const struct drm_framebuffer_test drm_framebuffer_create_cases[] = {
 
 struct drm_device_mock {
 	struct drm_device dev;
+	struct drm_file file_priv;
 	void *private;
 };
 
@@ -342,13 +344,18 @@ static int drm_framebuffer_test_init(struct kunit *test)
 {
 	struct drm_device_mock *mock;
 	struct drm_device *dev;
+	struct drm_file *file_priv;
+	struct drm_driver *driver;
 
 	mock = kunit_kzalloc(test, sizeof(*mock), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock);
 	dev = &mock->dev;
+	file_priv = &mock->file_priv;
 
-	dev->driver = kunit_kzalloc(test, sizeof(*dev->driver), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, dev->driver);
+	driver = kunit_kzalloc(test, sizeof(*dev->driver), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, driver);
+	driver->driver_features = DRIVER_MODESET;
+	dev->driver = driver;
 
 	idr_init_base(&dev->mode_config.object_idr, 1);
 	mutex_init(&dev->mode_config.fb_lock);
@@ -360,6 +367,9 @@ static int drm_framebuffer_test_init(struct kunit *test)
 	dev->mode_config.max_height = MAX_HEIGHT;
 	dev->mode_config.funcs = &mock_config_funcs;
 
+	mutex_init(&file_priv->fbs_lock);
+	INIT_LIST_HEAD(&file_priv->fbs);
+
 	test->priv = mock;
 	return 0;
 }
@@ -368,8 +378,10 @@ static void drm_framebuffer_test_exit(struct kunit *test)
 {
 	struct drm_device_mock *mock = test->priv;
 	struct drm_device *dev = &mock->dev;
+	struct drm_file *file_priv = &mock->file_priv;
 
 	mutex_destroy(&dev->mode_config.fb_lock);
+	mutex_destroy(&file_priv->fbs_lock);
 }
 
 static void drm_test_framebuffer_create(struct kunit *test)
@@ -540,7 +552,85 @@ static void drm_test_framebuffer_free(struct kunit *test)
 	KUNIT_EXPECT_PTR_EQ(test, obj, NULL);
 }
 
+static struct drm_framebuffer *
+fb_create_addfb2_mock(struct drm_device *dev, struct drm_file *file_priv,
+		      const struct drm_mode_fb_cmd2 *cmd)
+{
+	struct drm_device_mock *mock = container_of(dev, typeof(*mock), dev);
+	struct drm_framebuffer *fb;
+
+	fb = kzalloc(sizeof(*fb), GFP_KERNEL);
+	if (!fb)
+		return ERR_PTR(-ENOMEM);
+
+	fb->base.id = 1;
+
+	mock->private = fb;
+	return fb;
+}
+
+static struct drm_mode_config_funcs config_funcs_addfb2_mock = {
+	.fb_create = fb_create_addfb2_mock,
+};
+
+static void drm_test_framebuffer_addfb2(struct kunit *test)
+{
+	struct drm_device_mock *mock = test->priv;
+	struct drm_device *dev = &mock->dev;
+	struct drm_file *file_priv = &mock->file_priv;
+	struct drm_framebuffer *fb = NULL;
+	int ret;
+
+	/* A valid cmd */
+	struct drm_mode_fb_cmd2 cmd = {
+		.width = 600, .height = 600,
+		.pixel_format = DRM_FORMAT_ABGR8888,
+		.handles = { 1, 0, 0 }, .pitches = { 4 * 600, 0, 0 },
+	};
+
+	dev->mode_config.funcs = &config_funcs_addfb2_mock;
+
+	/* Should fail due to missing DRIVER_MODESET support */
+	ret = drm_mode_addfb2(dev, &cmd, file_priv);
+	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
+	KUNIT_ASSERT_PTR_EQ(test, mock->private, NULL);
+
+	/* Set DRIVER_MODESET support */
+	dev->driver_features = dev->driver->driver_features;
+
+	/* Set an invalid cmd to trigger a fail on the
+	 * drm_internal_framebuffer_create function
+	 */
+	cmd.width = 0;
+	ret = drm_mode_addfb2(dev, &cmd, file_priv);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	KUNIT_ASSERT_PTR_EQ(test, mock->private, NULL);
+	cmd.width = 600; /* restore to a valid value */
+
+	/* Now there should be no errors */
+	ret = drm_mode_addfb2(dev, &cmd, file_priv);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	/* The fb_create_addfb2_mock set fb id to 1 */
+	KUNIT_EXPECT_EQ(test, cmd.fb_id, 1);
+
+	/* The framebuffer was properly allocated */
+	fb = mock->private;
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, fb);
+
+	/* The fb should be properly added to the file_priv->fbs list */
+	KUNIT_EXPECT_PTR_EQ(test, file_priv->fbs.prev, &fb->filp_head);
+	KUNIT_EXPECT_PTR_EQ(test, file_priv->fbs.next, &fb->filp_head);
+
+	/* There should be just one fb on the list */
+	KUNIT_EXPECT_PTR_EQ(test, fb->filp_head.prev, &file_priv->fbs);
+	KUNIT_EXPECT_PTR_EQ(test, fb->filp_head.next, &file_priv->fbs);
+
+	kfree(fb);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
+	KUNIT_CASE(drm_test_framebuffer_addfb2),
 	KUNIT_CASE(drm_test_framebuffer_cleanup),
 	KUNIT_CASE(drm_test_framebuffer_free),
 	KUNIT_CASE(drm_test_framebuffer_init),
