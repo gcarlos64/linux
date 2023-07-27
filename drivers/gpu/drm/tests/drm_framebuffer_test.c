@@ -9,10 +9,14 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 
 #include "../drm_crtc_internal.h"
+
+#define FB_WIDTH  800
+#define FB_HEIGHT 600
 
 #define MIN_WIDTH 4
 #define MAX_WIDTH 4096
@@ -423,8 +427,65 @@ static void drm_test_framebuffer_modifiers_not_supported(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, 0, buffer_created);
 }
 
+/* Parameters for testing drm_framebuffer_check_src_coords function */
+struct check_src_coords_case {
+	const char *name; /* Description of the parameter case */
+	const int expect; /* Expected return value by the function */
+
+	/* Deltas to be applied on source */
+	const uint32_t dsrc_x;
+	const uint32_t dsrc_y;
+	const uint32_t dsrc_w;
+	const uint32_t dsrc_h;
+};
+
+static const struct check_src_coords_case check_src_coords_cases[] = {
+	{ .name = "Success: source fits into fb",
+	  .expect = 0,
+	},
+	{ .name = "Fail: overflowing fb with x-axis coordinate",
+	  .expect = -ENOSPC, .dsrc_x = 1,
+	},
+	{ .name = "Fail: overflowing fb with y-axis coordinate",
+	  .expect = -ENOSPC, .dsrc_y = 1,
+	},
+	{ .name = "Fail: overflowing fb with source width",
+	  .expect = -ENOSPC, .dsrc_w = 1,
+	},
+	{ .name = "Fail: overflowing fb with source height",
+	  .expect = -ENOSPC, .dsrc_h = 1,
+	},
+};
+
+static void drm_test_framebuffer_check_src_coords(struct kunit *test)
+{
+	const struct check_src_coords_case *params = test->param_value;
+	const uint32_t src_x = 0 + params->dsrc_x;
+	const uint32_t src_y = 0 + params->dsrc_y;
+	const uint32_t src_w = (FB_WIDTH << 16) + params->dsrc_w;
+	const uint32_t src_h = (FB_HEIGHT << 16) + params->dsrc_h;
+	const struct drm_framebuffer fb = {
+		.width  = FB_WIDTH,
+		.height = FB_HEIGHT,
+	};
+	int ret;
+
+	ret = drm_framebuffer_check_src_coords(src_x, src_y, src_w, src_h, &fb);
+	KUNIT_EXPECT_EQ(test, ret, params->expect);
+}
+
+static void check_src_coords_test_to_desc(const struct check_src_coords_case *t,
+					  char *desc)
+{
+	strscpy(desc, t->name, KUNIT_PARAM_DESC_SIZE);
+}
+
+KUNIT_ARRAY_PARAM(check_src_coords, check_src_coords_cases,
+		  check_src_coords_test_to_desc);
+
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
+	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
 	{ }
 };
