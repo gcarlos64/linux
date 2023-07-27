@@ -8,6 +8,7 @@
 #include <kunit/test.h>
 
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
@@ -370,6 +371,10 @@ static int drm_framebuffer_test_init(struct kunit *test)
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock);
 	dev = &mock->dev;
 
+	dev->driver = kunit_kzalloc(test, sizeof(*dev->driver), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, dev->driver);
+
+	idr_init_base(&dev->mode_config.object_idr, 1);
 	mutex_init(&dev->mode_config.fb_lock);
 	INIT_LIST_HEAD(&dev->mode_config.fb_list);
 	dev->mode_config.num_fb = 0;
@@ -530,8 +535,31 @@ static void drm_test_framebuffer_cleanup(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, dev->mode_config.num_fb, 0);
 }
 
+static void drm_test_framebuffer_lookup(struct kunit *test)
+{
+	struct drm_mock *mock = test->priv;
+	struct drm_device *dev = &mock->dev;
+	struct drm_framebuffer fb1 = { };
+	struct drm_framebuffer *fb2;
+	uint32_t id = 0;
+	int ret;
+
+	ret = drm_mode_object_add(dev, &fb1.base, DRM_MODE_OBJECT_FB);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	id = fb1.base.id;
+
+	/* Looking for fb1 */
+	fb2 = drm_framebuffer_lookup(dev, NULL, id);
+	KUNIT_EXPECT_PTR_EQ(test, fb2, &fb1);
+
+	/* Looking for an inexistent framebuffer */
+	fb2 = drm_framebuffer_lookup(dev, NULL, id + 1);
+	KUNIT_EXPECT_NULL(test, fb2);
+}
+
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE(drm_test_framebuffer_cleanup),
+	KUNIT_CASE(drm_test_framebuffer_lookup),
 	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
