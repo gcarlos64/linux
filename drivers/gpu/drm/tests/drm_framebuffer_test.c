@@ -9,6 +9,7 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
 
@@ -426,8 +427,133 @@ static void drm_test_framebuffer_modifiers_not_supported(struct kunit *test)
 	dev->mode_config.fb_modifiers_not_supported = 0;
 }
 
+/* Parameters for testing drm_framebuffer_check_src_coords function */
+struct check_src_coords_case {
+	const char *name; /* Description of the parameter case */
+	const int expect; /* Expected returned value by the function */
+
+	/* All function args */
+	const uint32_t src_x;
+	const uint32_t src_y;
+	const uint32_t src_w;
+	const uint32_t src_h;
+	const struct drm_framebuffer fb;
+};
+
+static const struct check_src_coords_case check_src_coords_cases[] = {
+	/* Regular case where the source just fit in the framebuffer */
+	{ .name = "source inside framebuffer with normal sizes and coordinates",
+	  .expect = 0,
+	  .src_x = 500 << 16, .src_y = 700 << 16,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "out of bound by both x and y with normal sizes and coordinates",
+	  .expect = -ENOSPC,
+	  .src_x = (500 << 16) + 1, .src_y = (700 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	/* From here, cases involving only x axis */
+	{ .name = "out of bound by x with normal width and x",
+	  .expect = -ENOSPC,
+	  .src_x = (500 << 16) + 1, .src_y = 700 << 16,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "out of bound by x due to source width higher than framebuffer width",
+	  .expect = -ENOSPC,
+	  .src_x = 0, .src_y = 700 << 16,
+	  .src_w = (600 << 16) + 1, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	/* Source fullfill framebuffer width just by its width */
+	{ .name = "source inside framebuffer with its width equal framebuffer width and zero x",
+	  .expect = 0,
+	  .src_x = 0, .src_y = 700 << 16,
+	  .src_w = 600 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	/*
+	 * Source fullfill framebuffer with its width and get out of
+	 * bound by having a non-zero x coordinate
+	 */
+	{ .name = "out of bound by x due to source width equal framebuffer width and non-zero x",
+	  .expect = -ENOSPC,
+	  .src_x = 1, .src_y = 700 << 16,
+	  .src_w = 600 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	{ .name = "out of bound by x due to x coordinate higher than framebuffer width",
+	  .expect = -ENOSPC,
+	  .src_x = (600 << 16) + 1, .src_y = 700 << 16,
+	  .src_w = 0, .src_h = 100 << 16,
+	  .fb = { .width = 600, .height = 800 }
+	},
+	/*
+	 * From here, the same of previous cases involving x axis but with
+	 * src_x and src_w values swapped with src_y and src_h, so we can cover
+	 * the same cases for the y axis
+	 */
+	{ .name = "out of bound by y with normal height and y",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = (500 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 100 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "out of bound by y due to source height higher than framebuffer height",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = 0,
+	  .src_w = 100 << 16, .src_h = (600 << 16) + 1,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "source inside framebuffer with its height equal framebuffer height and zero y",
+	  .expect = 0,
+	  .src_x = 700 << 16, .src_y = 0,
+	  .src_w = 100 << 16, .src_h = 600 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "out of bound by y due to source height equal framebuffer height and non-zero y",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = 1,
+	  .src_w = 100 << 16, .src_h = 600 << 16,
+	  .fb = { .width = 800, .height = 600 }
+	},
+	{ .name = "out of bound by y due to y coordinate higher than framebuffer height",
+	  .expect = -ENOSPC,
+	  .src_x = 700 << 16, .src_y = (600 << 16) + 1,
+	  .src_w = 100 << 16, .src_h = 0,
+	  .fb = { .width = 800, .height = 600 }
+	},
+};
+
+static void drm_test_framebuffer_check_src_coords(struct kunit *test)
+{
+	const struct check_src_coords_case *params = test->param_value;
+	int ret;
+
+	/*
+	 * Just compare the expected value with the one returned by the
+	 * function called with args from parameter
+	 */
+	ret = drm_framebuffer_check_src_coords(params->src_x, params->src_y,
+					       params->src_w, params->src_h,
+					       &params->fb);
+	KUNIT_EXPECT_EQ(test, ret, params->expect);
+}
+
+static void check_src_coords_test_to_desc(const struct check_src_coords_case *t,
+					  char *desc)
+{
+	strscpy(desc, t->name, KUNIT_PARAM_DESC_SIZE);
+}
+
+KUNIT_ARRAY_PARAM(check_src_coords, check_src_coords_cases,
+		  check_src_coords_test_to_desc);
+
 static struct kunit_case drm_framebuffer_tests[] = {
 	KUNIT_CASE(drm_test_framebuffer_modifiers_not_supported),
+	KUNIT_CASE_PARAM(drm_test_framebuffer_check_src_coords, check_src_coords_gen_params),
 	KUNIT_CASE_PARAM(drm_test_framebuffer_create, drm_framebuffer_create_gen_params),
 	{ }
 };
